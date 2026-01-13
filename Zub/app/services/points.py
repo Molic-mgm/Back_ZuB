@@ -1,6 +1,8 @@
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import User, ScoreEvent, AppSetting, DAILY_POINTS_LIMIT_KEY
+from app.models import User, ScoreEvent, DAILY_POINTS_LIMIT_KEY
+from app.services.settings import get_setting_int
+from app.services.redis_cache import invalidate_leaderboard_cache
 
 def _start_of_day(dt: datetime) -> datetime:
     return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
@@ -10,10 +12,7 @@ def _start_of_week(dt: datetime) -> datetime:
     return datetime(start_day.year, start_day.month, start_day.day, tzinfo=timezone.utc)
 
 async def get_daily_limit(session: AsyncSession) -> int:
-    row = await session.get(AppSetting, DAILY_POINTS_LIMIT_KEY)
-    if not row:
-        return 0
-    return int(row.value.get("limit", 0))
+    return await get_setting_int(session, DAILY_POINTS_LIMIT_KEY, default=0)
 
 async def ensure_resets(user: User) -> None:
     now = datetime.now(timezone.utc)
@@ -28,7 +27,31 @@ async def ensure_resets(user: User) -> None:
         user.weekly_points = 0
         user.last_weekly_reset_at = now
 
-async def add_points(session: AsyncSession, user: User, amount: int, reason: str | None):
+async def record_score_event(
+    session: AsyncSession,
+    user: User,
+    amount: int,
+    reason: str | None,
+    ip_address: str | None = None,
+    is_suspicious: bool = False,
+) -> None:
+    session.add(
+        ScoreEvent(
+            user_id=user.id,
+            amount=amount,
+            reason=reason,
+            ip_address=ip_address,
+            is_suspicious=is_suspicious,
+        )
+    )
+
+async def add_points(
+    session: AsyncSession,
+    user: User,
+    amount: int,
+    reason: str | None,
+    ip_address: str | None = None,
+):
     await ensure_resets(user)
     daily_limit = await get_daily_limit(session)
 
@@ -46,5 +69,6 @@ async def add_points(session: AsyncSession, user: User, amount: int, reason: str
     user.daily_points += accepted
     user.weekly_points += accepted
 
-    session.add(ScoreEvent(user_id=user.id, amount=accepted, reason=reason))
+    await record_score_event(session, user, accepted, reason, ip_address=ip_address)
+    await invalidate_leaderboard_cache()
     return accepted, (max(0, daily_limit - user.daily_points) if daily_limit > 0 else -1)

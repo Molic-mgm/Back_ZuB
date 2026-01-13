@@ -22,4 +22,7 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "admin_change_me"
     ADMIN_SESSION_SECRET: str = "admin_session_secret_change_me"
 
+    REDIS_URL: str = ""
+    LEADERBOARD_CACHE_TTL_SEC: int = 60
+
 settings = Settings()
